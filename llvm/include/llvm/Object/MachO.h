@@ -203,6 +203,14 @@ private:
 };
 using rebase_iterator = content_iterator<MachORebaseEntry>;
 
+struct ThreadedBindData {
+  StringRef SymbolName;
+  int64_t Addend          = 0;
+  int Ordinal             = 0;
+  uint32_t Flags          = 0;
+  uint8_t BindType        = 0;
+};
+
 /// MachOBindEntry encapsulates the current state in the decompression of
 /// binding opcodes. This allows you to iterate through the compressed table of
 /// bindings using:
@@ -259,6 +267,10 @@ private:
   uint8_t  PointerSize;
   Kind     TableKind;
   bool     Done = false;
+
+  size_t ordinal_table_size = 0;
+  bool use_threaded_rebase_bind = false;
+  std::vector<ThreadedBindData> ordinal_table;
 };
 using bind_iterator = content_iterator<MachOBindEntry>;
 

@@ -4065,7 +4065,7 @@ void MachOBindEntry::moveNext() {
       RemainingLoopCount = 0;
       error = O->BindEntryCheckSegAndOffsets(SegmentIndex, SegmentOffset,
                                              PointerSize);
-      if (error) {
+      if (!use_threaded_rebase_bind && error) {
         *E = malformedError("for BIND_OPCODE_DO_BIND " + Twine(error) +
                             " for opcode at: 0x" +
                             Twine::utohexstr(OpcodeStart - Opcodes.begin()));
@@ -4092,7 +4092,11 @@ void MachOBindEntry::moveNext() {
                       dbgs() << "BIND_OPCODE_DO_BIND: "
                              << format("SegmentOffset=0x%06X",
                                        SegmentOffset) << "\n");
-      return;
+      if (!use_threaded_rebase_bind)
+        return;
+
+      ordinal_table.push_back(ThreadedBindData{SymbolName, Addend, Ordinal, Flags, BindType});
+      break;
      case MachO::BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
       if (TableKind == Kind::Lazy) {
         *E = malformedError("BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB not allowed in "
@@ -4266,6 +4270,81 @@ void MachOBindEntry::moveNext() {
                  << ", RemainingLoopCount=" << RemainingLoopCount
                  << "\n");
       return;
+    case MachO::BIND_OPCODE_THREADED:
+      DEBUG_WITH_TYPE(
+          "mach-o-bind",
+          dbgs() << "BIND_OPCODE_THREADED: "
+                 << format("SegmentOffset=0x%06X", SegmentOffset)
+                 << ", " << format("Subopcode=0x%X", ImmValue)
+                 << "\n");
+      switch ((MachO::BindSubopcode)ImmValue) {
+        case MachO::BIND_SUBOPCODE_THREADED_SET_BIND_ORDINAL_TABLE_SIZE_ULEB:
+          Count = readULEB128(&error);
+          use_threaded_rebase_bind = true;
+          ordinal_table_size = Count + 1;
+          ordinal_table.reserve(ordinal_table_size);
+          break;
+        case MachO::BIND_SUBOPCODE_THREADED_APPLY: {
+          uint64_t RawValue;
+          uint64_t delta = 0;
+          ArrayRef<uint8_t> SegmentData = O->getSegmentContents(SegmentIndex);
+          int i = 0;
+
+          do {
+            error = O->BindEntryCheckSegAndOffsets(SegmentIndex, SegmentOffset,
+                                                   sizeof(RawValue));
+            if (error) {
+              *E =
+                  malformedError("for BIND_SUBOPCODE_THREADED_APPLY " +
+                                Twine(error) + " for opcode at: 0x" +
+                                Twine::utohexstr(OpcodeStart - Opcodes.begin()));
+              moveToEnd();
+              return;
+            }
+
+            memcpy(&RawValue, SegmentData.data() + SegmentOffset, sizeof(RawValue));
+            bool is_rebase = (RawValue & (static_cast<uint64_t>(1) << 62)) == 0;
+
+            if (i++ == 0) {
+              if (is_rebase) {
+                *E = malformedError("bad bind info (unexpected rebase apply at offset=0x" + Twine::utohexstr(SegmentOffset) + ")");
+                moveToEnd();
+                return;
+              }
+
+              uint16_t ordinal = RawValue & 0xFFFF;
+              const ThreadedBindData& th_bind_data = ordinal_table[ordinal];
+              SymbolName = th_bind_data.SymbolName;
+              Addend = th_bind_data.Addend;
+              Ordinal = th_bind_data.Ordinal;
+              Flags = th_bind_data.Flags;
+              BindType = th_bind_data.BindType;
+            } else {
+              if (!is_rebase) {
+                break;
+              }
+            }
+
+            RawValue &= ~(1ull << 62);
+            delta = (RawValue & 0x3FF8000000000000) >> 51;
+
+            SegmentOffset += delta * PointerSize;
+          } while (delta != 0);
+
+          if (delta != 0) {
+            Ptr--;
+            AdvanceAmount = 0;
+          }
+          return;
+        }
+        default:
+          *E = malformedError("bad bind info (bad subopcode value 0x" +
+                          Twine::utohexstr(ImmValue) + " for opcode at: 0x" +
+                          Twine::utohexstr(OpcodeStart - Opcodes.begin()));
+          moveToEnd();
+          return;
+      }
+      break;
     default:
       *E = malformedError("bad bind info (bad opcode value 0x" +
                           Twine::utohexstr(Opcode) + " for opcode at: 0x" +
