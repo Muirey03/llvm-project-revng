@@ -205,10 +205,10 @@ using rebase_iterator = content_iterator<MachORebaseEntry>;
 
 struct ThreadedBindData {
   StringRef SymbolName;
-  int64_t Addend          = 0;
-  int Ordinal             = 0;
-  uint32_t Flags          = 0;
-  uint8_t BindType        = 0;
+  int64_t Addend           = 0;
+  int Ordinal              = 0;
+  uint32_t Flags           = 0;
+  MachO::BindType BindType = MachO::BIND_TYPE_INVALID;
 };
 
 /// MachOBindEntry encapsulates the current state in the decompression of
